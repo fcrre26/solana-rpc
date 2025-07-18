@@ -7,7 +7,9 @@
 - 支持主网、测试网、开发网
 - 适合普通 RPC 节点和中小型服务商
 - 集成交互式管理菜单和常用快捷命令
-- 本脚本是由https://github.com/0xfnzero/solana-rpc-install/tree/main自动化。有任何疑问请移步查看
+
+> **本脚本由 [https://github.com/0xfnzero/solana-rpc-install/tree/main](https://github.com/0xfnzero/solana-rpc-install/tree/main) 自动化生成。如有疑问请移步查看。**
+
 ---
 
 ## 推荐硬件配置
@@ -39,11 +41,11 @@
 
 ## 快速开始
 
-### 1. 上传脚本到服务器
+### 1. 下载脚本
 
 ```bash
-scp solana-rpc.sh root@your_server:/root/
-chmod +x /root/solana-rpc.sh
+wget https://raw.githubusercontent.com/fcrre26/solana-rpc/refs/heads/main/solana-rpc -O solana-rpc.sh
+chmod +x solana-rpc.sh
 ```
 
 ### 2. 一键安装节点（首次运行）
