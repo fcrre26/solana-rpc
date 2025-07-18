@@ -101,12 +101,6 @@ A: 推荐使用 `solana-rpc --menu` 进入交互式菜单，或用快捷命令�
 
 ---
 
-## 交流与支持
-
-- Telegram 群组：[https://t.me/fnzero_group](https://t.me/fnzero_group)
-- Issues/PR 欢迎提交改进建议
-
----
 
 ## 免责声明
 
