@@ -1,0 +1,598 @@
+#!/bin/bash
+# Solana RPC 节点一体化安装与管理脚本 (增强版)
+# 版本: 4.0
+# GitHub: https://github.com/yourusername/solana-rpc-installer
+
+set -euo pipefail
+
+# 配置参数 (可自定义)
+SOLANA_VERSION="v2.2.16"
+RPC_VERSION="v1.3"
+NETWORK="mainnet"  # mainnet/testnet/devnet
+GEYSER_PLUGIN_URL="https://github.com/rpcpool/yellowstone-grpc/releases/download/v7.0.0%2Bsolana.2.2.16/yellowstone-grpc-geyser-release22-x86_64-unknown-linux-gnu.tar.bz2"
+MANAGEMENT_SCRIPTS_BASE="https://github.com/0xfnzero/solana-rpc-install/releases/download/${RPC_VERSION}"
+
+# 自动检测NVMe磁盘
+NVME_DISKS=($(ls /dev/nvme[0-9]n[0-9] 2>/dev/null))
+LEDGER_DISK=${NVME_DISKS[0]:-"/dev/nvme0n1"}
+ACCOUNTS_DISK=${NVME_DISKS[1]:-"/dev/nvme1n1"}
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# 日志函数
+log() { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1"; }
+success() { echo -e "${GREEN}✔ $1${NC}"; }
+warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
+error() { echo -e "${RED}✖ $1${NC}"; exit 1; }
+
+# 检查更新
+self_update() {
+    log "检查脚本更新..."
+    SCRIPT_URL="https://raw.githubusercontent.com/yourusername/solana-rpc-installer/main/solana-rpc.sh"
+    if ! curl -Is "$SCRIPT_URL" &>/dev/null; then
+        warn "无法连接到更新服务器"
+        return
+    fi
+    
+    TEMP_FILE=$(mktemp)
+    curl -s "$SCRIPT_URL" -o "$TEMP_FILE"
+    
+    if ! diff -q "$0" "$TEMP_FILE" &>/dev/null; then
+        warn "发现新版本，正在更新..."
+        cp "$TEMP_FILE" "$0"
+        chmod +x "$0"
+        success "更新完成! 请重新运行脚本"
+        exit 0
+    else
+        success "已是最新版本"
+    fi
+    rm -f "$TEMP_FILE"
+}
+
+# 网络检查
+check_network() {
+    log "检查网络连接..."
+    if ! curl -Is https://google.com &>/dev/null; then
+        error "无法连接到互联网，请检查网络"
+    fi
+    
+    if ! nslookup entrypoint.mainnet-beta.solana.com &>/dev/null; then
+        warn "无法解析Solana入口节点，DNS可能有问题"
+    fi
+    success "网络连接正常"
+}
+
+# 主安装函数
+install_solana_rpc() {
+    self_update
+    log "开始 Solana RPC 节点安装 (${NETWORK}网络)"
+    log "================================================"
+    
+    # 系统检查
+    check_network
+    check_system
+    
+    # 安装依赖
+    install_dependencies
+    
+    # 挂载磁盘
+    mount_disks
+    
+    # 系统优化
+    system_tuning
+    
+    # 安装Solana客户端
+    install_solana_client
+    
+    # 创建密钥
+    generate_keypair
+    
+    # 防火墙配置
+    configure_firewall
+    
+    # 创建服务
+    create_service
+    
+    # 配置GRPC
+    setup_grpc
+    
+    # 下载工具
+    download_tools
+    
+    # 安装管理菜单
+    install_menu
+    
+    success "安装完成!"
+    echo -e "${GREEN}================================================"
+    echo " Solana RPC 节点已成功安装 (${NETWORK})"
+    echo " 硬件信息:"
+    echo "   CPU: $(lscpu | grep 'Model name' | cut -d':' -f2 | xargs)"
+    echo "   内存: $(free -h | awk '/Mem:/ {print $2}')"
+    echo "   账本磁盘: ${LEDGER_DISK} ($(df -h /root/sol/ledger | awk 'NR==2 {print $2}'))"
+    echo "   账户磁盘: ${ACCOUNTS_DISK} ($(df -h /root/sol/accounts | awk 'NR==2 {print $2}'))"
+    echo " 管理命令:"
+    echo "   solana-rpc --menu      # 打开管理菜单"
+    echo "   solana-rpc --status    # 查看节点状态"
+    echo "   solana-rpc --monitor   # 硬件监控"
+    echo " 支持群组:"
+    echo "   ${CYAN}https://t.me/fnzero_group${NC}"
+    echo "================================================"
+}
+
+# 系统检查
+check_system() {
+    log "系统检查..."
+    # 检查root权限
+    [ "$EUID" -ne 0 ] && error "请使用 root 用户运行 (sudo -i)"
+    
+    # 检查架构
+    [ "$(uname -m)" != "x86_64" ] && error "仅支持 x86_64 架构"
+    
+    # 检查内存
+    local mem_gb=$(free -g | awk '/Mem:/ {print $2}')
+    [ "$mem_gb" -lt 128 ] && warn "内存不足 (${mem_gb}GB < 推荐192GB)"
+    
+    # 检查NVMe磁盘
+    [ ! -e "$LEDGER_DISK" ] && warn "未找到账本磁盘: $LEDGER_DISK"
+    [ ! -e "$ACCOUNTS_DISK" ] && warn "未找到账户磁盘: $ACCOUNTS_DISK"
+    
+    # 检查现有安装
+    if [ -f "/etc/systemd/system/sol.service" ]; then
+        warn "检测到现有Solana安装"
+        read -p "是否继续? 这将覆盖现有配置 [y/N] " confirm
+        [[ ! $confirm =~ ^[Yy]$ ]] && exit 1
+    fi
+    
+    success "系统检查通过"
+}
+
+# 安装依赖
+install_dependencies() {
+    log "安装系统依赖..."
+    apt update
+    apt install -y wget curl bzip2 vim ufw jq \
+                   linux-tools-common linux-tools-$(uname -r) \
+                   smartmontools nvme-cli lm-sensors
+    # 自动安装 openssl1.1（如未安装）
+    if ! dpkg -s libssl1.1 &>/dev/null; then
+        log "安装 openssl1.1..."
+        wget -q http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb -O /tmp/libssl1.1.deb
+        dpkg -i /tmp/libssl1.1.deb || apt-get -f install -y
+        rm -f /tmp/libssl1.1.deb
+        success "openssl1.1 安装完成"
+    else
+        success "openssl1.1 已安装"
+    fi
+    success "依赖安装完成"
+}
+
+# 挂载磁盘
+mount_disks() {
+    log "配置数据磁盘..."
+    mkdir -p /root/sol/{accounts,ledger,snapshot,bin}
+
+    # 格式化磁盘 (如果未格式化) - 增加二次确认
+    if ! blkid $LEDGER_DISK > /dev/null; then
+        warn "即将格式化账本磁盘: $LEDGER_DISK，所有数据将被清空！"
+        read -p "确认格式化账本磁盘？输入 yes 继续: " confirm
+        if [[ "$confirm" == "yes" ]]; then
+            mkfs.ext4 -F $LEDGER_DISK
+        else
+            warn "用户取消了账本磁盘格式化，跳过。"
+        fi
+    fi
+
+    if ! blkid $ACCOUNTS_DISK > /dev/null; then
+        warn "即将格式化账户磁盘: $ACCOUNTS_DISK，所有数据将被清空！"
+        read -p "确认格式化账户磁盘？输入 yes 继续: " confirm
+        if [[ "$confirm" == "yes" ]]; then
+            mkfs.ext4 -F $ACCOUNTS_DISK
+        else
+            warn "用户取消了账户磁盘格式化，跳过。"
+        fi
+    fi
+
+    # 挂载磁盘
+    mount $LEDGER_DISK /root/sol/ledger
+    mount $ACCOUNTS_DISK /root/sol/accounts
+
+    # 更新fstab
+    grep -q "/root/sol/ledger" /etc/fstab || echo "$LEDGER_DISK /root/sol/ledger ext4 defaults,noatime 0 0" >> /etc/fstab
+    grep -q "/root/sol/accounts" /etc/fstab || echo "$ACCOUNTS_DISK /root/sol/accounts ext4 defaults,noatime 0 0" >> /etc/fstab
+
+    # 禁用swap
+    sed -i '/swap/s/^/#/' /etc/fstab
+    swapoff -a
+    success "磁盘配置完成"
+}
+
+# 系统优化
+system_tuning() {
+    log "优化系统配置..."
+    
+    # CPU性能模式
+    cpupower frequency-set --governor performance > /dev/null
+    
+    # sysctl优化
+    cat > /etc/sysctl.d/99-solana-rpc.conf << EOF
+# TCP优化
+net.ipv4.tcp_rmem=10240 87380 12582912
+net.ipv4.tcp_wmem=10240 87380 12582912
+net.ipv4.tcp_congestion_control=westwood
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_timestamps=0
+net.ipv4.tcp_sack=1
+
+# 内核优化
+kernel.timer_migration=0
+kernel.hung_task_timeout_secs=30
+kernel.pid_max=49152
+
+# 内存优化
+vm.swappiness=10
+vm.max_map_count=2000000
+vm.dirty_ratio=40
+vm.dirty_background_ratio=10
+vm.min_free_kbytes=3000000
+
+# Solana优化
+net.core.rmem_max=134217728
+net.core.rmem_default=134217728
+net.core.wmem_max=134217728
+net.core.wmem_default=134217728
+fs.nr_open=1000000
+EOF
+    
+    sysctl -p /etc/sysctl.d/99-solana-rpc.conf > /dev/null
+    
+    # 文件描述符限制
+    echo "* - nofile 1000000" >> /etc/security/limits.conf
+    ulimit -n 1000000
+    
+    # 禁用透明大页
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled
+    echo "echo never > /sys/kernel/mm/transparent_hugepage/enabled" >> /etc/rc.local
+    
+    success "系统优化完成"
+}
+
+# 安装Solana客户端
+install_solana_client() {
+    log "安装 Solana 客户端 (${SOLANA_VERSION})..."
+    sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.bashrc
+    source /root/.bashrc
+    solana --version
+    success "Solana 客户端安装完成"
+}
+
+# 创建密钥
+generate_keypair() {
+    log "创建验证者密钥..."
+    cd /root/sol/bin
+    solana-keygen new -o validator-keypair.json --no-passphrase
+    local PUBKEY=$(solana-keygen pubkey validator-keypair.json)
+    success "密钥已保存: /root/sol/bin/validator-keypair.json"
+    warn "公钥: ${CYAN}${PUBKEY}${NC}"
+    warn "请务必备份此密钥文件到安全位置!"
+}
+
+# 防火墙配置
+configure_firewall() {
+    log "配置防火墙..."
+    ufw --force enable
+    ufw allow 22
+    ufw allow 8000:8020/tcp
+    ufw allow 8000:8020/udp
+    ufw allow 8899    # RPC HTTP
+    ufw allow 8900    # WebSocket
+    ufw allow 10900   # GRPC
+    ufw reload
+    ufw status
+    success "防火墙已配置"
+}
+
+# 创建服务
+create_service() {
+    log "创建节点服务..."
+    
+    # 根据网络配置入口点
+    case "$NETWORK" in
+        testnet)
+            ENTRYPOINTS="--entrypoint testnet.solana.com:8001"
+            KNOWN_VALIDATORS=""
+            GENESIS_HASH="4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+            ;;
+        devnet)
+            ENTRYPOINTS="--entrypoint devnet.solana.com:8001"
+            KNOWN_VALIDATORS=""
+            GENESIS_HASH="EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+            ;;
+        *)
+            ENTRYPOINTS="--entrypoint entrypoint.mainnet-beta.solana.com:8001 \
+                        --entrypoint entrypoint2.mainnet-beta.solana.com:8001 \
+                        --entrypoint entrypoint3.mainnet-beta.solana.com:8001 \
+                        --entrypoint entrypoint4.mainnet-beta.solana.com:8001 \
+                        --entrypoint entrypoint5.mainnet-beta.solana.com:8001"
+            KNOWN_VALIDATORS="--known-validator Certusm1sa411sMpV9FPqU5dXAYhmmhygvxJ23S6hJ24 \
+                             --known-validator 7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2 \
+                             --known-validator GdnSyH3YtwcxFvQrVVJMm1JhTS4QVX7MFsX56uJLUfiZ \
+                             --known-validator CakcnaRDHka2gXyfbEd2d3xsvkJkqsLw2akB3zsN1D2S \
+                             --known-validator DE1bawNcRJB9rVm3buyMVfr8mBEoyyu73NBovf2oXJsJ"
+            GENESIS_HASH="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+            ;;
+    esac
+    
+    # 启动脚本
+    cat > /root/sol/bin/validator.sh << EOF
+#!/bin/bash
+RUST_LOG=warn agave-validator \\
+  --geyser-plugin-config /root/sol/bin/yellowstone-config.json \\
+  --ledger /root/sol/ledger \\
+  --accounts /root/sol/accounts \\
+  --identity /root/sol/bin/validator-keypair.json \\
+  --snapshots /root/sol/snapshot \\
+  --log /root/solana-rpc.log \\
+  ${ENTRYPOINTS} \\
+  ${KNOWN_VALIDATORS} \\
+  --expected-genesis-hash ${GENESIS_HASH} \\
+  --only-known-rpc \\
+  --disable-banking-trace \\
+  --rpc-bind-address 0.0.0.0 \\
+  --rpc-port 8899 \\
+  --full-rpc-api \\
+  --private-rpc \\
+  --no-voting \\
+  --dynamic-port-range 8000-8020 \\
+  --wal-recovery-mode skip_any_corrupted_record \\
+  --limit-ledger-size 60000000 \\
+  --no-port-check \\
+  --no-snapshot-fetch \\
+  --account-index-include-key AddressLookupTab1e1111111111111111111111111 \\
+  --account-index program-id \\
+  --rpc-bigtable-timeout 300 \\
+  --full-snapshot-interval-slots 1577880000 \\
+  --incremental-snapshot-interval-slots 788940000 \\
+  --incremental-snapshot-archive-path /root/sol/snapshot
+EOF
+
+    chmod +x /root/sol/bin/validator.sh
+
+    # 系统服务
+    cat > /etc/systemd/system/sol.service << EOF
+[Unit]
+Description=Solana Validator
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=root
+LimitNOFILE=1000000
+LogRateLimitIntervalSec=0
+Environment="PATH=/bin:/usr/bin:/root/.local/share/solana/install/active_release/bin"
+ExecStart=/root/sol/bin/validator.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    success "节点服务已创建"
+}
+
+# 配置GRPC
+setup_grpc() {
+    log "配置 GRPC 服务..."
+    cd /root/sol/bin
+    wget -q "$GEYSER_PLUGIN_URL" -O geyser-plugin.tar.bz2
+    tar -xvjf geyser-plugin.tar.bz2
+    rm -f geyser-plugin.tar.bz2
+    
+    wget -q -O yellowstone-config.json "${MANAGEMENT_SCRIPTS_BASE}/yellowstone-config.json"
+    
+    # 验证下载
+    if [ ! -f "yellowstone-grpc" ]; then
+        error "GRPC插件下载失败"
+    fi
+    success "GRPC 配置完成"
+}
+
+# 下载工具
+download_tools() {
+    log "下载管理工具..."
+    cd /root
+    wget -q "${MANAGEMENT_SCRIPTS_BASE}/redo_node.sh"
+    wget -q "${MANAGEMENT_SCRIPTS_BASE}/get_health.sh"
+    wget -q "${MANAGEMENT_SCRIPTS_BASE}/catchup.sh"
+    chmod +x {redo_node,get_health,catchup}.sh
+    
+    # 添加硬件监控脚本
+    cat > hardware_monitor.sh << 'EOF'
+#!/bin/bash
+watch -n 5 "echo -e '${CYAN}===== 硬件监控 =====${NC}\nCPU温度:\n$(sensors | grep 'Core')\n\n磁盘健康:\n$(smartctl -a ${LEDGER_DISK} | grep -iE 'Temp|Reallocated')\n\n内存使用:\n$(free -h)\n\n磁盘空间:\n$(df -h /root/sol/ledger /root/sol/accounts)'"
+EOF
+    chmod +x hardware_monitor.sh
+    
+    success "管理工具下载完成"
+}
+
+# 安装管理菜单
+install_menu() {
+    log "安装管理菜单..."
+    
+    # 创建管理菜单脚本
+    cat > /usr/local/bin/solana-rpc << 'EOF'
+#!/bin/bash
+# Solana RPC 节点管理菜单
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# 获取节点状态
+node_status() {
+    if systemctl is-active sol >/dev/null; then
+        echo -e "${GREEN}运行中${NC}"
+        return 0
+    else
+        echo -e "${RED}已停止${NC}"
+        return 1
+    fi
+}
+
+# 显示菜单
+show_menu() {
+    clear
+    echo -e "${CYAN}"
+    echo "========================================================"
+    echo "   Solana RPC 节点管理菜单 (${NETWORK})"
+    echo "========================================================"
+    echo -e "${NC}"
+    echo -e "主机: ${YELLOW}$(hostname)${NC} | IP: ${YELLOW}$(hostname -I | awk '{print $1}')${NC}"
+    echo -e "状态: $(node_status)"
+    echo -e "公钥: ${CYAN}$([ -f "/root/sol/bin/validator-keypair.json" ] && solana-keygen pubkey /root/sol/bin/validator-keypair.json)${NC}"
+    echo -e "${BLUE}Telegram 支持: https://t.me/fnzero_group${NC}"
+    echo -e "${CYAN}========================================================"
+    echo -e "${NC}"
+}
+
+# 硬件监控
+hardware_monitor() {
+    echo -e "${CYAN}启动硬件监控 (Ctrl+C 退出)...${NC}"
+    watch -n 5 "echo -e '${CYAN}===== 硬件监控 =====${NC}\nCPU温度:\n$(sensors | grep 'Core')\n\n磁盘健康:\n$(smartctl -a ${LEDGER_DISK} | grep -iE 'Temp|Reallocated')\n\n内存使用:\n$(free -h)\n\n磁盘空间:\n$(df -h /root/sol/ledger /root/sol/accounts)'"
+}
+
+# 更新脚本
+update_script() {
+    echo -e "${CYAN}更新管理脚本...${NC}"
+    curl -s "https://raw.githubusercontent.com/yourusername/solana-rpc-installer/main/solana-rpc.sh" -o /tmp/solana-rpc-new
+    if ! diff -q /usr/local/bin/solana-rpc /tmp/solana-rpc-new; then
+        mv /tmp/solana-rpc-new /usr/local/bin/solana-rpc
+        chmod +x /usr/local/bin/solana-rpc
+        echo -e "${GREEN}更新成功! 请重新运行菜单${NC}"
+        exit 0
+    else
+        echo -e "${YELLOW}已是最新版本${NC}"
+        rm -f /tmp/solana-rpc-new
+    fi
+}
+
+# 执行命令
+handle_choice() {
+    case $1 in
+        1) systemctl start sol && echo -e "${GREEN}节点已启动${NC}";;
+        2) systemctl stop sol && echo -e "${YELLOW}节点已停止${NC}";;
+        3) systemctl restart sol && echo -e "${CYAN}节点已重启${NC}";;
+        4) systemctl status sol --no-pager -l;;
+        5) journalctl -u sol -f --no-pager;;
+        6) /root/catchup.sh;;
+        7) /root/get_health.sh;;
+        8) hardware_monitor;;
+        9) 
+            echo -e "${YELLOW}此操作将重置节点，继续? [y/N]${NC}"
+            read confirm
+            [[ $confirm =~ ^[Yy]$ ]] && /root/redo_node.sh;;
+        10) 
+            BACKUP_FILE="/root/validator-keypair_$(date +%s).json"
+            cp /root/sol/bin/validator-keypair.json $BACKUP_FILE
+            echo -e "${GREEN}密钥已备份到: ${BACKUP_FILE}${NC}"
+            echo -e "${YELLOW}⚠ 请立即将此文件移动到安全位置 ⚠${NC}";;
+        11) update_script;;
+        0) exit 0;;
+        *) echo -e "${RED}无效选项!${NC}";;
+    esac
+}
+
+# 主循环
+while true; do
+    show_menu
+    read -p "请选择操作 [0-11]: " choice
+    handle_choice $choice
+    read -p "按 Enter 继续..." _
+done
+EOF
+
+    chmod +x /usr/local/bin/solana-rpc
+    success "管理菜单已安装"
+    echo -e "使用 ${YELLOW}solana-rpc${NC} 命令管理节点"
+}
+
+# 命令行快捷功能
+quick_commands() {
+    case "$1" in
+        --install)
+            install_solana_rpc
+            ;;
+        --menu)
+            /usr/local/bin/solana-rpc
+            ;;
+        --status)
+            systemctl status sol --no-pager -l
+            ;;
+        --logs)
+            journalctl -u sol -f --no-pager
+            ;;
+        --catchup)
+            [ -f "/root/catchup.sh" ] && /root/catchup.sh || error "未找到 catchup.sh"
+            ;;
+        --health)
+            [ -f "/root/get_health.sh" ] && /root/get_health.sh || error "未找到 get_health.sh"
+            ;;
+        --monitor)
+            [ -f "/root/hardware_monitor.sh" ] && /root/hardware_monitor.sh || error "未找到监控脚本"
+            ;;
+        --start)
+            systemctl start sol
+            systemctl status sol --no-pager -l
+            ;;
+        --stop)
+            systemctl stop sol
+            systemctl status sol --no-pager -l
+            ;;
+        --restart)
+            systemctl restart sol
+            systemctl status sol --no-pager -l
+            ;;
+        --update)
+            curl -s "https://raw.githubusercontent.com/yourusername/solana-rpc-installer/main/solana-rpc.sh" -o "$0" && chmod +x "$0" && echo "更新完成!" && exit
+            ;;
+        *)
+            echo -e "${CYAN}Solana RPC 节点管理脚本 v4.0${NC}"
+            echo "用法:"
+            echo "  solana-rpc --install      安装节点"
+            echo "  solana-rpc --menu         打开管理菜单"
+            echo "  solana-rpc --status       查看节点状态"
+            echo "  solana-rpc --logs         查看实时日志"
+            echo "  solana-rpc --catchup      检查区块同步"
+            echo "  solana-rpc --health       检查节点健康"
+            echo "  solana-rpc --monitor      硬件监控"
+            echo "  solana-rpc --start        启动节点"
+            echo "  solana-rpc --stop         停止节点"
+            echo "  solana-rpc --restart      重启节点"
+            echo "  solana-rpc --update       更新脚本"
+            exit 1
+            ;;
+    esac
+}
+
+# 主入口
+if [ $# -eq 0 ]; then
+    # 显示帮助信息
+    quick_commands --help
+else
+    # 执行命令
+    quick_commands "$1"
+fi
