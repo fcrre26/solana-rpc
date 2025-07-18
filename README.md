@@ -7,7 +7,7 @@
 - 支持主网、测试网、开发网
 - 适合普通 RPC 节点和中小型服务商
 - 集成交互式管理菜单和常用快捷命令
-
+- 本脚本是由https://github.com/0xfnzero/solana-rpc-install/tree/main自动化。有任何疑问请移步查看
 ---
 
 ## 推荐硬件配置
